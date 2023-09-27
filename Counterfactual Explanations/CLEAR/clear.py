@@ -10,7 +10,7 @@ class CLEAR1:
             self.N = num_points_neighbourhood
             self.model = model
             self.wachter_search_max = wachter_search_max
-            self.prototypes = self.model.fit()
+            #self.prototypes = self.model.fit()
             self.lr = learning_rate
             self.batch_size = batch_size
             self.r = regression
@@ -150,31 +150,7 @@ class CLEAR1:
             generated_labels =pd.DataFrame(synthetic_data[:,-1], columns= training_labels.columns)
             return generated_data, generated_labels
 
-    # def synthetic_generator(self):
-    
-        
-    #     seed = 42
-
-    #     rng = np.random.default_rng(seed)
-    #     self.train_data = self.normalize(self.train_data)
-    #     number_of_points = (len(self.train_data)//3)*2
-    #     components = []
-    #     components_labels = []
-    #     for i in np.unique(self.training_labels):
-    #         target_indices = np.flatnonzero(self.training_labels == i)
-    #         target_points = self.train_data[target_indices]
-    #         mu, sigma = np.mean(target_points, axis = 0), np.cov(target_points.T)
-    #         components.append(rng.multivariate_normal(mu, sigma, number_of_points))
-    #         components_labels.extend([i]*number_of_points)
-
-     
-    #     data_new = np.vstack(components)
-    #     data = np.vstack((data_new, self.train_data))
-    #     labels = np.hstack((np.array(components_labels),self.training_labels.reshape((self.training_labels.shape[0],))))
-    #     synthetic_data = np.column_stack((data, labels))
-    #     rng.shuffle(synthetic_data)
-    #     return synthetic_data[:,:synthetic_data.shape[1] - 1], synthetic_data[:,-1]
-        
+  
     
     def Mean_absolute_deviation(self, data):
         feature_medians = np.median(data, axis = 0)
@@ -284,22 +260,6 @@ class CLEAR1:
             index = sorted_list[0]
             return CF_space.iloc[index]
 
-    # def wachter_search(self):
-    #     data, labels = self.synthetic_generator()
-    #     #data = self.normalize(data)
-    #     CF_space = data[np.flatnonzero(labels == self.target_class)]
-    #     distances = np.array([((abs(x - self.unit))/self.Mean_absolute_deviation(CF_space)).sum() for x in CF_space])
-        
-    #     loss = np.array([self.model.Pl_loss(x, self.target_class, self.prototypes) for x in CF_space])
-        
-    #     lst = np.array([np.linalg.norm(-x+ y) for x,y  in zip(distances, loss)])
-    #     sorted_list = lst.argsort()[::2][::-1]
-    #     if self.wachter_search_max is not None:
-    #         index = sorted_list[:self.wachter_search_max]
-    #         return CF_space[index]
-    #     else:
-    #         index = sorted_list[0]
-    #         return np.array([CF_space[index]])
 
             
 
@@ -349,17 +309,17 @@ class CLEAR1:
         return estimate
     
 
-    def check_counterfactual(self, counterfactual, target, prototypes = None):
+    def check_counterfactual(self, counterfactual, target,train_data, training_labels, prototypes = None):
 
-        proto_labels, _ = self.model.initialization()
+        proto_labels, _ = self.model.initialization(np.array(train_data), np.array(training_labels))
         if prototypes is not None:
-            if self.model.proba_predict(counterfactual, prototypes,proto_labels )[target] < self.c_t:
+            if self.model.proba_predict(counterfactual)[target] < self.c_t:
                 return True
             else: 
                 return False 
         else:
     
-            prototypes = self.model.fit()
+            prototypes = self.model.fit(np.array(train_data), np.array(training_labels))
         
             #print(model.proba_predict(counterfactuals.iloc[i], prototypesx,proto_labels ))#[target - 1])
             if self.model.proba_predict(counterfactual, prototypes,proto_labels )[target] < self.c_t:
@@ -370,7 +330,8 @@ class CLEAR1:
 
     
     def generate_counterfactual(self, train_data, training_labels,unit, unit_class, target_class, prototypes = None):
-        proto_labels, _ = self.model.initialization()
+        self.prototypes = prototypes
+        proto_labels, _ = self.model.initialization(np.array(train_data), np.array(training_labels))
         # unit_class = self.model.predict(unit, self.prototypes, proto_labels)
         counterfactual_list = self.wachter_search(unit, train_data, training_labels, target_class)
         estimations = self.estimated_b_counterfactual(train_data, training_labels,unit, unit_class, target_class)
@@ -386,7 +347,7 @@ class CLEAR1:
         #chosen = pd.DataFrame(best_CFEs, train_data.columns)
         indices = []
         for i in range(chosen.shape[0]):
-            if self.check_counterfactual(chosen.iloc[i], target_class, prototypes) == True:
+            if self.check_counterfactual(chosen.iloc[i], target_class, train_data, training_labels, prototypes) == True:
                 indices.append(i)
         if indices == []:
             print('something went wrong, repeat')
