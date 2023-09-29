@@ -40,7 +40,7 @@ class RSLVQ:
                 if self.cat_full == True:
                     P = np.array(prototypes)
                 else:
-                    P = np.array(prototypes) + (0.01 *1* np.random.uniform(low = -1.0, high = 1.0, size = 1)*np.array(prototypes))
+                    P = np.array(prototypes) + (0.01 *self.sigma* np.random.uniform(low = -1.0, high = 1.0, size = 1)*np.array(prototypes))
                 new_labels = unique_labels
             else:
                 list2 = []
@@ -156,8 +156,26 @@ class RSLVQ:
         return self.prototypes 
     
 
+    def predict_all(self, data, return_scores = False):
 
-    
+        """predict an array of instances""" 
+        label = []
+        #prototypes, _ = RSLVQ(data, labels, num_prototypes, max_iter)
+        if return_scores == False:
+            for i in range(data.shape[0]):
+                xi = data[i]
+                distances = np.array([np.linalg.norm(xi - p) for p in self.prototypes])
+                index = np.argwhere(distances == distances.min())
+                x_label = self.proto_labels[index]
+                label.append(x_label)
+            return np.array(label).flatten()
+        else:
+            predicted = []
+            for i in range(len(data)):
+                predicted.append(self.proba_predict(data[i]))
+            return predicted 
+
+        
 
     def likelihood_ratio(self, prototypes, train_data, train_labels):
     
@@ -210,6 +228,7 @@ class RSLVQ:
         return self.prototypes, self.proto_labels
     
     def evaluate(self, test_data, test_labels):
+        """predict over test set and outputs test MAE"""
         predicted = []
         for i in range(len(test_data)):
             predicted.append(self.predict(test_data[i]))
@@ -231,9 +250,11 @@ class RSLVQ:
 
 
     def predict(self, input):
+        """predicts only one output at the time, numpy arrays only, 
+        might want to convert"""
         
    
-    #prototypes, _ = RSLVQ(data, labels, num_prototypes, max_iter)
+
 
        
          
@@ -244,9 +265,9 @@ class RSLVQ:
         
         return x_label
     
-    def proba_predict(self, input):
+    def proba_predict(self, input, softmax = False):
         """probabilistic prediction of a point by approximation of distances of a point to closest prototypes
-        the argmin is the desired class"""
+        the argmin is the desired class. If softmax is true, then predicted class is argmax"""
         scores = []
         closest_prototypes = []
         for i in np.unique(self.proto_labels):
@@ -256,7 +277,11 @@ class RSLVQ:
             closest_prototypes.append(closest_prototype)
         dists = np.array([np.linalg.norm(input - prototype) for prototype in closest_prototypes])
         scores = np.array([d/dists.sum() for d in dists])
+        if softmax == True:
+            score = scores.copy()
+            scores = [np.exp(-z)/(np.array(np.exp(-1*score)).sum()) for z in score]
         return scores 
+
     
   
     def inner_f(self, x, p):
@@ -278,18 +303,18 @@ class RSLVQ:
 
 
     
-    def Pl_loss(self, unit, target_class, prototypes):
+    def Pl_loss(self, unit, target_class):
         #updated_prototypes = self.fit()
         index = np.flatnonzero(self.proto_labels == target_class)[0]
 
         u = []
-        for i in range(len(prototypes)):
+        for i in range(len(self.prototypes)):
             if target_class == self.proto_labels[i]:
-                u.append(np.exp(self.inner_f(unit, prototypes[i])))
+                u.append(np.exp(self.inner_f(unit, self.prototypes[i])))
             else:
                 u.append(0)
             numerator = np.array(u).sum()
-        denominator = np.sum(np.array([np.exp(self.inner_f(unit, p)) for p in prototypes]))
+        denominator = np.sum(np.array([np.exp(self.inner_f(unit, p)) for p in self.prototypes]))
         
         return numerator/denominator 
 
