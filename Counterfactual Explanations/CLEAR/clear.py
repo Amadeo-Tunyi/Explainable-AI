@@ -1,10 +1,19 @@
 import numpy as np
 import pandas as pd
 from scipy import stats
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, recall_score
 from collections import Counter
 from scipy.spatial import distance
+from helpers import check_sparsity
+import random
+from density_check import Kernel_obj
+from helpers import generate_subsets, weighted_l1_norm
 class CLEAR1:
-    def __init__(self,model, num_points_neighbourhood,neighbourhood = 'unbalanced', backend = 'lvq', classification_threshold = 0.4, number_of_CFEs = 1,  cat_cols = None, set_immutable = None,  regression = None, wachter_search_max = None, learning_rate = None, batch_size = None):
+    def __init__(self,model, num_points_neighbourhood,neighbourhood = 'unbalanced', backend = 'lvq', synthetic_generator_scheme = 'Gaussian', 
+                 classification_threshold = 0.4, number_of_CFEs = 1,  cat_cols = None, set_immutable = None,  
+                 regression = None, wachter_search_max = None, learning_rate = None, batch_size = None,
+                 number_of_reg_runs = 50):
             
             #self.unit = (unit - self.train_data.mean(axis=0))/self.train_data.std(axis=0
             self.N = num_points_neighbourhood
@@ -16,77 +25,163 @@ class CLEAR1:
             self.batch_size = batch_size
             self.r = regression
             self.num_cf = number_of_CFEs
+            self.scheme = synthetic_generator_scheme
             #self.num_cols = num_cols
             self.cat_cols = cat_cols
             self.c_t = classification_threshold
             self.immutable = set_immutable
             self.backend = backend
+            self.n_runs = number_of_reg_runs 
             
 
 
 
-    def synthetic_generator(self, train_data, training_labels):
+
+
+
+    def perturb_vector(self, vector, num_to_perturb, target_class, mean=0, std_dev=1):
+        """
+        Perturb a vector by replacing a specified number of its values with random samples
+        from a Gaussian distribution.
+
+        Args:
+        - vector: The input vector (list) to be perturbed.
+        - num_to_perturb: The number of values to perturb.
+        - mean: The mean of the Gaussian distribution (default is 0).
+        - std_dev: The standard deviation of the Gaussian distribution (default is 1).
+
+        Returns:
+        - The perturbed vector with some values replaced by Gaussian samples.
+        """
+        if num_to_perturb < 0 or num_to_perturb > len(vector):
+            raise ValueError("num_to_perturb should be between 0 and the length of the vector")
+
+        # Create a copy of the input vector to avoid modifying the original
+        perturbed_vector = vector.copy()
+        seed = 42
+
+        rng = np.random.default_rng(seed)
+        counterfactual_class = self.train_data.loc[self.training_labels['labels'] == target_class]
+        mean_counterfactual_class= counterfactual_class.mean(axis = 0)
+        perturbation_factor = 0.8 #rng.uniform(low = 0, high = 1)
+        difference_vector = mean_counterfactual_class - perturbed_vector
+
+        # Choose random indices to perturb
+        indices_to_perturb = random.sample(range(len(perturbed_vector)), num_to_perturb)
+
+        # Perturb the selected indices
+        #for index in indices_to_perturb:
+            
+        perturbed_vector += perturbation_factor * difference_vector
+
+        return perturbed_vector
+    
+
+   
+
+
+    def synthetic_generator(self, train_data, training_labels, unit, target_class ):
 
 
         seed = 42
 
         rng = np.random.default_rng(seed)
+        if self.scheme == 'Gaussian':
         
-        number_of_points = (len(train_data)//3)*2
-        components = []
-        components_labels = []
-        df = pd.DataFrame()
-        if self.cat_cols is not None :
-            print('no numerical column specified')
-            num_cols = [col for col in train_data.columns if col not in self.cat_cols]
-            for label in training_labels['labels'].unique():
-                #target_indices = np.flatnonzero(self.training_labels == i)
-                #target_points = self.train_data[target_indices]
-                target_points = train_data.loc[training_labels['labels'] == label]
-                new_data = pd.DataFrame(columns = target_points.columns)
-                components_labels.extend([label]*number_of_points)
+            number_of_points = (len(train_data)//3)*2
+            components = []
+            components_labels = []
+            df = pd.DataFrame()
+            if self.cat_cols is not None :
+                print('no numerical column specified')
+                num_cols = [col for col in train_data.columns if col not in self.cat_cols]
+                for label in training_labels['labels'].unique():
+                    #target_indices = np.flatnonzero(self.training_labels == i)
+                    #target_points = self.train_data[target_indices]
+                    target_points = train_data.loc[training_labels['labels'] == label]
+                    new_data = pd.DataFrame(columns = target_points.columns)
+                    components_labels.extend([label]*number_of_points)
 
-                   
-                for col in num_cols:
-                    mu = target_points[col].mean()
-                    sigma = target_points[col].std()
-                    new_data[col] = np.random.normal(mu, sigma, number_of_points)
-                for col in self.cat_cols:
-                    values = target_points[col].unique()
-                    count = Counter(target_points[col])
-                    probabilities = tuple([count[values[i]]/len(target_points) for i in range(len(values))])
-                    custm = stats.rv_discrete(name='custm', values=(values, probabilities))
-                    new_data[col] = custm.rvs(size = number_of_points)
-            
-                    df_created = pd.concat([target_points, new_data], ignore_index=True, sort=False)
-                df_new = pd.concat([df, df_created], ignore_index=True, sort=False)
-                df = df_new
-            labels = np.hstack((np.array(components_labels),np.array(training_labels).reshape((training_labels.shape[0],))))
-            generated_labels = pd.DataFrame(labels, columns = training_labels.columns)
-            generated_data = df
-            return generated_data, generated_labels
+                    
+                    for col in num_cols:
+                        mu = target_points[col].mean()
+                        sigma = target_points[col].std()
+                        new_data[col] = np.random.normal(mu, sigma, number_of_points)
+                    for col in self.cat_cols:
+                        values = target_points[col].unique()
+                        count = Counter(target_points[col])
+                        probabilities = tuple([count[values[i]]/len(target_points) for i in range(len(values))])
+                        custm = stats.rv_discrete(name='custm', values=(values, probabilities))
+                        new_data[col] = custm.rvs(size = number_of_points)
+                
+                        df_created = pd.concat([target_points, new_data], ignore_index=True, sort=False)
+                    df_new = pd.concat([df, df_created], ignore_index=True, sort=False)
+                    df = df_new
+                labels = np.hstack((np.array(components_labels),np.array(training_labels).reshape((training_labels.shape[0],))))
+                generated_labels = pd.DataFrame(labels, columns = training_labels.columns)
+                generated_data = df
+                return generated_data, generated_labels
 
-            
-
-        elif self.cat_cols is None:
-
-            for label in training_labels['labels'].unique():
-                #target_indices = np.flatnonzero(self.training_labels == i)
-                #target_points = self.train_data[target_indices]
-                target_points = train_data.loc[training_labels['labels'] == label]
-                mu, sigma = target_points.mean(axis = 0), target_points.cov()
-                components.append(rng.multivariate_normal(mu, sigma, number_of_points))
-                components_labels.extend([label]*number_of_points)
+    
 
                 
-            data_new = np.vstack(components)
-            data = np.vstack((data_new, train_data))
-            labels = np.hstack((np.array(components_labels),np.array(training_labels).reshape((training_labels.shape[0],))))
-            synthetic_data = np.column_stack((data, labels))
-            rng.shuffle(synthetic_data)
-            generated_data = pd.DataFrame(synthetic_data[:,:synthetic_data.shape[1] - 1], columns= train_data.columns)
-            generated_labels =pd.DataFrame(synthetic_data[:,-1], columns= training_labels.columns)
-            return generated_data, generated_labels
+
+            elif self.cat_cols is None:
+
+                for label in training_labels['labels'].unique():
+                    #target_indices = np.flatnonzero(self.training_labels == i)
+                    #target_points = self.train_data[target_indices]
+                    target_points = train_data.loc[training_labels['labels'] == label]
+                    mu, sigma = target_points.mean(axis = 0), target_points.cov()
+                    components.append(rng.multivariate_normal(mu, sigma, number_of_points))
+                    components_labels.extend([label]*number_of_points)
+
+                    
+                data_new = np.vstack(components)
+                data = np.vstack((data_new, train_data))
+                labels = np.hstack((np.array(components_labels),np.array(training_labels).reshape((training_labels.shape[0],))))
+                synthetic_data = np.column_stack((data, labels))
+                rng.shuffle(synthetic_data)
+                generated_data = pd.DataFrame(synthetic_data[:,:synthetic_data.shape[1] - 1], columns= train_data.columns)
+                generated_labels =pd.DataFrame(synthetic_data[:,-1], columns= training_labels.columns)
+                return generated_data, generated_labels
+
+    
+        
+
+        elif self.scheme == 'Perturbation':
+            lst = []
+            synthetic_array = []
+            label = []
+            n_runs = 0
+            while n_runs < 10:
+                for i in range(train_data.shape[1]):
+                    for j in range(train_data.shape[1]):
+                        alpha = 1
+                        perturbed = self.perturb_vector(np.array(unit), i+1, target_class, mean=0, std_dev=alpha*(0.9**(n_runs)))
+                        lst.append(perturbed)
+                n_runs += 1
+                       
+            for x in lst:
+                if self.backend == 'lvq':
+                    label.append(self.model.predict(np.array(x)))
+                    synthetic_array.append(x)
+
+                elif self.backend == 'sklearn':
+                    label.append(self.model.predict(pd.DataFrame(np.array(x).reshape((1, train_data.shape[1])), columns= train_data.columns)))
+                    synthetic_array.append(x)
+        
+            generated_data = pd.DataFrame(synthetic_array, columns= train_data.columns)
+            synthetic_data1 = pd.concat([generated_data, train_data], axis = 0)
+            generated_labels =pd.DataFrame(target_class*np.ones(len(synthetic_array)), columns= training_labels.columns)
+            synthetic_label = pd.concat([generated_labels, training_labels], axis = 0)
+            return synthetic_data1, synthetic_label
+            
+            
+        
+
+    
+            
 
   
     
@@ -139,7 +234,7 @@ class CLEAR1:
     def Balanced_Neighbourhood(self, unit, target_class):
         neighbourhood = []
 
-        self.synthetic_data, self.synthetic_labels = self.synthetic_generator(self.train_data, self.training_labels)
+        self.synthetic_data, self.synthetic_labels = self.synthetic_generator(self.train_data, self.training_labels, unit, target_class)
         if target_class == None:
             target_class = self.target_class
         
@@ -238,7 +333,7 @@ class CLEAR1:
                         sorted_distances = dist[dist[:,0].argsort()]
                         
                         index_list = sorted_distances[:,1].astype(int)[:self.N//3]
-                        print(len(index_list))
+                        #print(len(index_list))
                             
                         selected_points = np.array(cut)[index_list]
                         
@@ -247,7 +342,7 @@ class CLEAR1:
                 else:
                     
                     for cut in [first_cut, second_cut, third_cut]:
-                        print(len(cut))
+                        #print(len(cut))
                         
                         distances = []
                         for j in range(len(cut)):
@@ -288,7 +383,7 @@ class CLEAR1:
 
  
     def wachter_search(self, unit, target_class):
-        data, labels = self.synthetic_generator(self.train_data, self.training_labels)
+        data, labels = self.synthetic_generator(self.train_data, self.training_labels, unit, target_class)
         if self.immutable is not None:
             #immutable_features = unit[self.immutable]
             for feature in self.immutable:
@@ -312,7 +407,7 @@ class CLEAR1:
                 index = sorted_list[:self.wachter_search_max]
                 return CF_space.iloc[index]
             else:
-                index = sorted_list[0]
+                index = sorted_list
                 return CF_space.iloc[index]
             
 
@@ -336,8 +431,10 @@ class CLEAR1:
                 index = sorted_list[:self.wachter_search_max]
                 return CF_space.iloc[index]
             else:
-                index = sorted_list[0]
+                index = sorted_list
                 return CF_space.iloc[index]
+         
+
 
 
 
@@ -350,20 +447,76 @@ class CLEAR1:
         if self.r == None:
             from sklearn.linear_model import LogisticRegression
             log_model = LogisticRegression()
-            log_model.fit(balenced_data, balanced_labels)
-            w = log_model.coef_
+            x_train, x_test, y_train, y_test = train_test_split(balenced_data, balanced_labels)
+            n = 0
+            weights = []
+            recalls = []
+            while n < self.n_runs:
+                n += 1
+                log_model.fit(x_train, y_train)
+                y_pred = log_model.predict(x_test)
+                acc = accuracy_score(y_test, y_pred)
+                recall = recall_score(y_test, y_pred)
+                if acc >= 0.8 and recall >= 0.8:
+                    w = log_model.coef_
+                    #print(acc, recall)
+                    break
+                else:
+                    weight = log_model.coef_
+                    weights.append(weight)
+                    recalls.append(recall)
+                    w = weights[np.argmax(np.array(recalls))]
+                    #print(np.max(np.array(recalls)))
+                    
             return w[0]
+           
         elif self.r == 'lasso':
             from sklearn.linear_model import Lasso
             log_model = Lasso(alpha = 0.1)
-            log_model.fit(balenced_data, balanced_labels)
-            w = log_model.coef_
+            x_train, x_test, y_train, y_test = train_test_split(balenced_data, balanced_labels)
+            n = 0
+            weights = []
+            recalls = []
+            while n < self.n_runs:
+                n += 1
+                log_model.fit(x_train, y_train)
+                y_pred = log_model.predict(x_test)
+                acc = accuracy_score(y_test, y_pred)
+                recall = recall_score(y_test, y_pred)
+                if acc >= 0.8 and recall >= 0.8:
+                    w = log_model.coef_
+                    break
+                else:
+                    weight = log_model.coef_
+                    weights.append(weight)
+                    recalls.append(recall)
+                    w = weights[np.argmax(np.array(recalls))]
+                    #print(np.max(np.array(recalls)))
             return w
         elif self.r == 'SVM':
             from sklearn.svm import SVR
             log_model = SVR(kernel = 'linear')
-            log_model.fit(balenced_data, balanced_labels)
-            w = log_model.coef_
+            x_train,  x_test,y_train, y_test = train_test_split(balenced_data, balanced_labels)
+            n = 0
+            weights = []
+            recalls = []
+            while n < self.n_runs:
+                n += 1
+                log_model.fit(x_train, y_train)
+                y_pred = log_model.predict(x_test)
+                acc = accuracy_score(y_test, y_pred)
+                recall = recall_score(y_test, y_pred)
+                if acc >= 0.8 and recall >= 0.8:
+                    w = log_model.coef_
+                    #print('blat')
+                    break
+                else:
+                    weight = log_model.coef_
+                    weights.append(weight)
+                    recalls.append(recall)
+                    w = weights[np.argmax(np.array(recalls))]
+                    #print(np.max(np.array(recalls)))
+        
             return w[0]
 
 
@@ -425,7 +578,7 @@ class CLEAR1:
         if self.backend == 'lvq':
             self.unit_class = self.model.predict(unit)
         elif self.backend == 'sklearn':
-            print(pd.DataFrame(np.array(unit).reshape((1, self.train_data.shape[1])), columns=self.train_data.columns))
+            #print(pd.DataFrame(np.array(unit).reshape((1, self.train_data.shape[1])), columns=self.train_data.columns))
             self.unit_class = self.model.predict(pd.DataFrame(np.array(unit).reshape((1, self.train_data.shape[1])), columns=self.train_data.columns))
             
         if target_class == 'opposite':
@@ -446,29 +599,46 @@ class CLEAR1:
             FEs.append(fidelity_error)
             
         Errors = np.array(FEs)
-        best_CFEs = Errors.argsort()[:self.num_cf]
+        best_CFEs = Errors.argsort()
         chosen = counterfactual_list.iloc[best_CFEs]
+        chosen_estimates = estimations[best_CFEs]
 
         #chosen = pd.DataFrame(best_CFEs, train_data.columns)
         indices = []
         for i in range(chosen.shape[0]):
             if self.backend =='lvq':
 
-                if self.check_counterfactual(chosen.iloc[i], self.target_class) == True:
-                    indices.append(i)
-                    break
+                if self.check_counterfactual(chosen.iloc[i], self.target_class) == True: #and self.check_counterfactual(chosen_estimates[i], self.target_class) == True:
+                    num_features = 1
+                    while num_features <= self.train_data.shape[1] + 1:
+                        if check_sparsity(num_features).is_sparse(unit, chosen.iloc[i]):
+                            indices.append(i)
+                            #break
+                        num_features += 1
+                        
+                    
 
             
 
             elif self.backend == 'sklearn':
-                if self.check_counterfactual(pd.DataFrame(np.array(chosen)[i].reshape((1, self.train_data.shape[1])), columns = self.train_data.columns), self.target_class) == True:
-                    indices.append(i)
-                    break
+                if self.check_counterfactual(pd.DataFrame(np.array(chosen)[i].reshape((1, self.train_data.shape[1])), columns = self.train_data.columns), self.target_class) == True \
+                    and self.check_counterfactual(pd.DataFrame(np.array(chosen_estimates)[i].reshape((1, self.train_data.shape[1])), columns = self.train_data.columns), self.target_class) == True:
+                    num_features = 1
+                    while num_features <= self.train_data.shape[1] + 1:
+                        if check_sparsity(num_features).is_sparse(unit, chosen.iloc[i]):
+                            indices.append(i)
+                            
+                            break
+                        num_features += 1
         if indices == []:
             print('something went wrong, repeat')
+        else:
+            norms = np.array([self.MAD(self.train_data[self.training_labels['labels'] == self.target_class], unit, np.array(chosen.iloc[i])) for i in indices])
+            min_norm_index = np.argmin(norms)
+            cf_index = indices[min_norm_index]
 
         
-        return chosen.iloc[indices], pd.DataFrame(estimations[indices], columns=self.train_data.columns)
+        return chosen.iloc[cf_index], pd.DataFrame(chosen_estimates[cf_index].reshape((1, self.train_data.shape[1])), columns=self.train_data.columns)
     
         
 

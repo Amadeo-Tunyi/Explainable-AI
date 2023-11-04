@@ -1,10 +1,11 @@
 
 import numpy as np
 import pandas as pd
-
+from helpers import CustomScaler
 
 
 from sklearn.neighbors import KernelDensity
+
 from scipy.special import gamma as gamma_function
 
 
@@ -18,12 +19,12 @@ class Kernel_obj:
 		self._kernel = KernelDensity(bandwidth=self.b , kernel='tophat')
 		self.Num_points = Num_points
 		self.knnK = knnK
-		self.data = data
 		self.volume = None
+		self.data = data
 
-	def fitKernel(self, X):
-		print("Fitting kernel...")
-		self._kernel.fit(X)
+
+
+		
 
 	def kernelUniform(self, xi, xj):
 		"""
@@ -40,6 +41,11 @@ class Kernel_obj:
 		inner = np.array([self.K(norm.computeDistance(self.data[i],  xi)/self.b) for i in range(self.data.shape[0])])
 		
 		return inner.sum()/(len(self.data)*self.b)
+	
+	def scale(self, data, xi):
+		scaler  = CustomScaler()
+		scaler.fit(data)
+		return scaler.transform(xi)
 
 
 	def kernelKNN(self, xi):
@@ -55,6 +61,14 @@ class Kernel_obj:
 		dist = sorted_distances[:self.Num_points].max()
 		density_at_mean = self.knnK/((self.Num_points*self.volume)*dist)
 		return density_at_mean
+	
+
+	def knn_density(self,xi):
+		lst = []
+		for i in range(len(self.data)):
+			lst.append((self.kernelKNN(np.array(self.data)[i])))
+		x = self.kernelKNN(xi)
+		return self.scale(np.array(lst), x)
 	
 
 
