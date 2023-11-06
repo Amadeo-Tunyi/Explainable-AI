@@ -11,7 +11,7 @@ from density_check import Kernel_obj
 from helpers import generate_subsets, weighted_l1_norm
 class CLEAR1:
     def __init__(self,model, num_points_neighbourhood,neighbourhood = 'unbalanced', backend = 'lvq', synthetic_generator_scheme = 'Gaussian', 
-                 classification_threshold = 0.4, number_of_CFEs = 1,  cat_cols = None, set_immutable = None,  
+                 classification_threshold = 0.4, number_of_CFEs = 1, num_cols = None, cat_cols = None, set_immutable = [],  
                  regression = None, wachter_search_max = None, learning_rate = None, batch_size = None,
                  number_of_reg_runs = 50):
             
@@ -26,7 +26,7 @@ class CLEAR1:
             self.r = regression
             self.num_cf = number_of_CFEs
             self.scheme = synthetic_generator_scheme
-            #self.num_cols = num_cols
+            self.num_cols = num_cols
             self.cat_cols = cat_cols
             self.c_t = classification_threshold
             self.immutable = set_immutable
@@ -70,11 +70,42 @@ class CLEAR1:
         indices_to_perturb = random.sample(range(len(perturbed_vector)), num_to_perturb)
 
         # Perturb the selected indices
-        #for index in indices_to_perturb:
+        for index in indices_to_perturb:
             
-        perturbed_vector += perturbation_factor * difference_vector
+            perturbed_vector[index] += perturbation_factor * difference_vector[index]
 
         return perturbed_vector
+    
+
+    def perturb_col(self, unit, num_to_perturb, target_class, mean=0, std_dev=1):
+        counterfactual_class = self.train_data.loc[self.training_labels['labels'] == target_class]
+        columns = self.train_data.columns
+        perturbed_vector = unit.copy()
+        indices_to_perturb = random.sample(range(len(perturbed_vector)), num_to_perturb)
+        cols_to_perturb = columns[indices_to_perturb]
+        for col in cols_to_perturb:
+            if col in self.cat_cols:
+                perturbed_vector[col] = counterfactual_class.mode().iloc[0][col]
+            else:
+                
+                seed = 42
+
+                rng = np.random.default_rng(seed)
+                #counterfactual_class = self.train_data.loc[self.training_labels['labels'] == target_class]
+                mean_counterfactual_class= counterfactual_class.mean(axis = 0)
+                perturbation_factor = 0.8 #rng.uniform(low = 0, high = 1)
+                difference_vector = mean_counterfactual_class - perturbed_vector
+
+                # Choose random indices to perturb
+                #indices_to_perturb = random.sample(range(len(perturbed_vector)), num_to_perturb)
+                perturbed_vector[col] += perturbation_factor * difference_vector[col]
+
+
+        return perturbed_vector
+
+            
+
+        
     
 
    
@@ -84,11 +115,103 @@ class CLEAR1:
 
 
         seed = 42
+        unit_df = pd.DataFrame(np.array(unit).reshape((1, train_data.shape[1])), columns = self.train_data.columns)
 
         rng = np.random.default_rng(seed)
-        if self.scheme == 'Gaussian':
+        number_of_points = (len(train_data)//3)*4
+        if self.scheme == 'Point-Specific':
         
-            number_of_points = (len(train_data)//3)*2
+            
+            components = []
+            components_labels = []
+            df = pd.DataFrame()
+            if self.cat_cols is not None :
+                print('no numerical column specified')
+                num_cols = [col for col in train_data.columns if col not in self.cat_cols]
+                n_classes = len(training_labels['labels'].unique())
+                new_data = []
+                new_labels = []
+                for label in training_labels['labels'].unique():
+                    #target_indices = np.flatnonzero(self.training_labels == i)
+                    #target_points = self.train_data[target_indices]
+                    target_points = train_data.loc[training_labels['labels'] == label]
+                    #new_data = pd.DataFrame(columns = target_points.columns)
+
+                    components_labels.extend([label]*number_of_points)
+                    unit_df = pd.DataFrame(np.array(unit).reshape((1, train_data.shape[1])), columns = self.train_data.columns)
+                    n = 0
+                    while n<=number_of_points//n_classes:                    
+                        for col in self.train_data.columns:
+                            if col in num_cols:
+                                if col not in self.immutable:
+                                    unit_df[col] += rng.normal(target_points[col].mean(), target_points[col].std(),1)
+                                else:
+                                    unit_df[col] += 0
+                            
+                            elif col in self.cat_cols:
+                                if col not in self.immutable:
+                                    values = target_points[col].unique()
+                                    index = random.sample(range(len(values)), 1)
+                                    unit_df[col] = values[index]
+                                else:
+                                    unit_df[col] += 0
+                            if self.backend == 'sklearn':
+                                #if self.model.predict(pd.DataFrame(np.array(unit_df).reshape((1, train_data.shape[1])), columns= train_data.columns)) == label:
+                                new_data.append(np.array(unit_df))
+                                new_labels.append(label)
+
+                                n += 1
+                            elif self.backend == 'lvq':
+                                #if self.model.predict(np.array(unit_df)) == label:
+                                new_data.append(np.array(unit_df))
+                                new_labels.append(label)
+
+                                n += 1
+
+
+            
+                generated_data = pd.DataFrame(np.array(new_data).reshape((np.array(new_data).shape[0], np.array(new_data).shape[2])), columns= train_data.columns)
+                synthetic_data1 = pd.concat([generated_data, train_data], axis = 0)
+                generated_labels =pd.DataFrame(new_labels, columns= training_labels.columns)
+                synthetic_label = pd.concat([generated_labels, training_labels], axis = 0)
+                return generated_data, generated_labels
+            
+
+
+    
+
+                
+
+            elif self.cat_cols is None:
+
+                for label in training_labels['labels'].unique():
+                    #target_indices = np.flatnonzero(self.training_labels == i)
+                    #target_points = self.train_data[target_indices]
+                    target_points = train_data.loc[training_labels['labels'] == label]
+                    mu, sigma = target_points.mean(axis = 0), target_points.cov()
+                    components.append(rng.multivariate_normal(mu, sigma, number_of_points))
+                    #components_labels.extend([label]*number_of_points)
+
+                    
+                data_new = np.vstack(components)
+                data = np.vstack((data_new, train_data))
+                #labels = np.hstack((np.array(components_labels),np.array(training_labels).reshape((training_labels.shape[0],))))
+                synthetic_data = np.column_stack((data, labels))
+                rng.shuffle(synthetic_data)
+                generated_data = pd.DataFrame(synthetic_data[:,:synthetic_data.shape[1] - 1], columns= train_data.columns)
+                #generated_labels =pd.DataFrame(synthetic_data[:,-1], columns= training_labels.columns)
+                for col in self.immutable:
+                    generated_data[col] = generated_data[col].apply(lambda x: unit_df[col])
+                if self.backend == 'lvq':
+                    labels = np.array([self.model.predict(np.array(generated_data)[i]) for i in range(len(generated_data))])
+                    generated_labels =pd.DataFrame(labels, columns= training_labels.columns)
+                elif  self.backend == 'sklearn':
+                    labels = np.array([self.model.predict(self.model.predict(pd.DataFrame(np.array(generated_data)[i].reshape((1, train_data.shape[1])), columns= train_data.columns))) \
+                                        for i in range(len(generated_data))])
+                    generated_labels =pd.DataFrame(labels, columns= training_labels.columns) 
+                return generated_data, generated_labels
+
+        elif self.scheme == 'Gaussian':
             components = []
             components_labels = []
             df = pd.DataFrame()
@@ -100,31 +223,43 @@ class CLEAR1:
                     #target_points = self.train_data[target_indices]
                     target_points = train_data.loc[training_labels['labels'] == label]
                     new_data = pd.DataFrame(columns = target_points.columns)
-                    components_labels.extend([label]*number_of_points)
+                    #components_labels.extend([label]*number_of_points)
 
                     
                     for col in num_cols:
                         mu = target_points[col].mean()
                         sigma = target_points[col].std()
-                        new_data[col] = np.random.normal(mu, sigma, number_of_points)
+                        #new_data[col] = np.random.normal(mu, sigma, number_of_points)
+                        if col not in self.immutable:
+                            new_data[col] = np.random.normal(mu, sigma, number_of_points)
+                        else:
+                            new_data[col] = new_data[col].apply(lambda x: unit_df[col])
                     for col in self.cat_cols:
                         values = target_points[col].unique()
                         count = Counter(target_points[col])
                         probabilities = tuple([count[values[i]]/len(target_points) for i in range(len(values))])
                         custm = stats.rv_discrete(name='custm', values=(values, probabilities))
-                        new_data[col] = custm.rvs(size = number_of_points)
+                        if col not in self.immutable:
+                            new_data[col] =  custm.rvs(size = number_of_points)
+                        else:
+                            new_data[col] = new_data[col].apply(lambda x: unit_df[col])
                 
                         df_created = pd.concat([target_points, new_data], ignore_index=True, sort=False)
                     df_new = pd.concat([df, df_created], ignore_index=True, sort=False)
                     df = df_new
-                labels = np.hstack((np.array(components_labels),np.array(training_labels).reshape((training_labels.shape[0],))))
-                generated_labels = pd.DataFrame(labels, columns = training_labels.columns)
+                # labels = np.hstack((np.array(components_labels),np.array(training_labels).reshape((training_labels.shape[0],))))
+                # generated_labels = pd.DataFrame(labels, columns = training_labels.columns)
                 generated_data = df
+                if self.backend == 'lvq':
+                    labels = np.array([self.model.predict(np.array(generated_data)[i]) for i in range(len(generated_data))])
+                    generated_labels =pd.DataFrame(labels, columns= training_labels.columns)
+                elif  self.backend == 'sklearn':
+                    labels = np.array([self.model.predict(self.model.predict(pd.DataFrame(np.array(generated_data)[i].reshape((1, train_data.shape[1])), columns= train_data.columns))) \
+                                        for i in range(len(generated_data))])
+                    generated_labels =pd.DataFrame(labels, columns= training_labels.columns) 
                 return generated_data, generated_labels
 
-    
-
-                
+            
 
             elif self.cat_cols is None:
 
@@ -143,24 +278,40 @@ class CLEAR1:
                 synthetic_data = np.column_stack((data, labels))
                 rng.shuffle(synthetic_data)
                 generated_data = pd.DataFrame(synthetic_data[:,:synthetic_data.shape[1] - 1], columns= train_data.columns)
-                generated_labels =pd.DataFrame(synthetic_data[:,-1], columns= training_labels.columns)
-                return generated_data, generated_labels
-
-    
-        
+                #generated_labels =pd.DataFrame(synthetic_data[:,-1], columns= training_labels.columns)
+                for col in self.immutable:
+                    generated_data[col] = generated_data[col].apply(lambda x: unit_df[col])
+                if self.backend == 'lvq':
+                    labels = np.array([self.model.predict(np.array(generated_data)[i]) for i in range(len(generated_data))])
+                    generated_labels =pd.DataFrame(labels, columns= training_labels.columns)
+                elif  self.backend == 'sklearn':
+                    labels = np.array([self.model.predict(self.model.predict(pd.DataFrame(np.array(generated_data)[i].reshape((1, train_data.shape[1])), columns= train_data.columns))) \
+                                        for i in range(len(generated_data))])
+                    generated_labels =pd.DataFrame(labels, columns= training_labels.columns) 
+                return generated_data, generated_labels    
+            
 
         elif self.scheme == 'Perturbation':
             lst = []
             synthetic_array = []
             label = []
             n_runs = 0
-            while n_runs < 10:
-                for i in range(train_data.shape[1]):
-                    for j in range(train_data.shape[1]):
-                        alpha = 1
-                        perturbed = self.perturb_vector(np.array(unit), i+1, target_class, mean=0, std_dev=alpha*(0.9**(n_runs)))
-                        lst.append(perturbed)
-                n_runs += 1
+            if self.cat_cols is None:
+                while n_runs < 10:
+                    for i in range(train_data.shape[1]):
+                        for j in range(train_data.shape[1]):
+                            alpha = 1
+                            perturbed = self.perturb_vector(np.array(unit), i+1, target_class, mean=0, std_dev=alpha*(0.9**(n_runs)))
+                            lst.append(perturbed)
+                    n_runs += 1
+            else:
+                while n_runs < 10:
+                    for i in range(train_data.shape[1]):
+                        for j in range(train_data.shape[1]):
+                            alpha = 1
+                            perturbed = self.perturb_col(unit, i+1, target_class, mean=0, std_dev=alpha*(0.9**(n_runs)))
+                            lst.append(np.array(perturbed))
+                    n_runs += 1
                        
             for x in lst:
                 if self.backend == 'lvq':
@@ -172,9 +323,9 @@ class CLEAR1:
                     synthetic_array.append(x)
         
             generated_data = pd.DataFrame(synthetic_array, columns= train_data.columns)
-            synthetic_data1 = pd.concat([generated_data, train_data], axis = 0)
-            generated_labels =pd.DataFrame(target_class*np.ones(len(synthetic_array)), columns= training_labels.columns)
-            synthetic_label = pd.concat([generated_labels, training_labels], axis = 0)
+            synthetic_data1 = pd.concat([generated_data, train_data], axis = 0, ignore_index =True)
+            generated_labels =pd.DataFrame(label, columns= training_labels.columns)
+            synthetic_label = pd.concat([generated_labels, training_labels], axis = 0, ignore_index= True)
             return synthetic_data1, synthetic_label
             
             
@@ -192,14 +343,16 @@ class CLEAR1:
         return MAD
 
         
-    def cat_con_dist(self, data, a, b):
-            num1 = a[self.num_cols]
-            num2 = b[self.num_cols]
-            cat1 = a[self.cat_cols]
-            cat2 = b[self.cat_cols]
-            manhattan_distance = distance.cityblock(cat1, cat2)
-            MAD = ((abs(num1 - num2))/self.Mean_absolute_deviation(data)).sum()
-            return manhattan_distance + MAD
+    def cat_con_dist(self,a, b):
+        if self.num_cols is None:
+            self.num_cols = [col for col in self.train_data.columns if col not in self.cat_cols]
+        num1 = a[self.num_cols]
+        num2 = b[self.num_cols]
+        cat1 = a[self.cat_cols]
+        cat2 = b[self.cat_cols]
+        manhattan_distance = distance.cityblock(cat1, cat2)
+        MAD = ((abs(num1 - num2))/self.Mean_absolute_deviation(self.train_data[self.num_cols])).sum()
+        return manhattan_distance + MAD
     
     def MAD (self, data, a, b):
         return ((abs(a - b))/self.Mean_absolute_deviation(data)).sum()
@@ -348,7 +501,7 @@ class CLEAR1:
                         for j in range(len(cut)):
                             if self.cat_cols is not None:
                                 self.num_cols = [col for col in self.train_data.columns if col not in self.cat_cols]
-                                distances.append([self.cat_cols(self.train_data, unit, cut[j]), j])
+                                distances.append([self.cat_con_dist(unit, cut[j]), j])
                             else:
 
                                 distances.append([self.MAD(self.train_data, unit, cut[j]), j])
@@ -393,7 +546,7 @@ class CLEAR1:
             CF_space = data.loc[labels['labels'] == target_class]
             if self.cat_cols is not None:
                 self.num_cols = [col for col in self.train_data.columns if col not in self.cat_cols]
-                distances = np.array([self.cat_con_dist(data, CF_space.iloc[i], unit) for i in range(len(CF_space))])
+                distances = np.array([self.cat_con_dist(CF_space.iloc[i], unit) for i in range(len(CF_space))])
             else:
                 distances = np.array([self.MAD(data, CF_space.iloc[i], unit) for i in range(len(CF_space))])
             loss = np.array([self.model.Pl_loss(CF_space.iloc[i], target_class) for i in range(len(CF_space))])
@@ -417,7 +570,7 @@ class CLEAR1:
                 distances = np.array([self.MAD(data, CF_space.iloc[i], unit) for i in range(len(CF_space))])
             else:
 
-                distances = np.array([self.cat_con_dist(data, CF_space.iloc[i], unit) for i in range(len(CF_space))])
+                distances = np.array([self.cat_con_dist(CF_space.iloc[i], unit) for i in range(len(CF_space))])
             n_classes = len(self.training_labels['labels'].unique())
             t = np.zeros((1,n_classes))
             t[0][target_class] = 1.0
@@ -567,7 +720,7 @@ class CLEAR1:
     
             # Here, the loss is computed using the
             # above mathematical formulation.
-            loss = loss + (-1 * y_true[0][i]*np.log(y_pred[0][i] + 1e8))
+            loss = loss + (-1 * y_true[0][i]*np.log(y_pred[0][i] + 1e-8))
     
         return loss
  
