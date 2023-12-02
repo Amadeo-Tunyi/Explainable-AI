@@ -218,7 +218,6 @@ class RSLVQ:
                 predicted.append(self.predict(train_data[i]))
             val_acc = (np.array(predicted) == np.array(train_labels).flatten()).mean() * 100  
             lr = self.likelihood_ratio(self.prototypes, train_data, train_labels)
-            #print(f'Acc.......{val_acc}, loss......{lr}')
             loss.append(lr)
             #iter += 1
             

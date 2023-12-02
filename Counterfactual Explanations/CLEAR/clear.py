@@ -11,7 +11,7 @@ from density_check import Kernel_obj
 from helpers import generate_subsets, weighted_l1_norm
 class CLEAR1:
     def __init__(self,model, num_points_neighbourhood,neighbourhood = 'unbalanced', backend = 'lvq', synthetic_generator_scheme = 'Gaussian', 
-                 classification_threshold = 0.4, number_of_CFEs = 1, num_cols = None, cat_cols = None, set_immutable = [],  
+                 classification_threshold = 0.4, density_threshold = None, number_of_CFEs = 1, num_cols = None, cat_cols = None, set_immutable = [],  
                  regression = None, wachter_search_max = None, learning_rate = None, batch_size = None,
                  number_of_reg_runs = 50):
             
@@ -29,6 +29,7 @@ class CLEAR1:
             self.num_cols = num_cols
             self.cat_cols = cat_cols
             self.c_t = classification_threshold
+            self.d_t = density_threshold
             self.immutable = set_immutable
             self.backend = backend
             self.n_runs = number_of_reg_runs 
@@ -63,7 +64,7 @@ class CLEAR1:
         rng = np.random.default_rng(seed)
         counterfactual_class = self.train_data.loc[self.training_labels['labels'] == target_class]
         mean_counterfactual_class= counterfactual_class.mean(axis = 0)
-        perturbation_factor = 0.8 #rng.uniform(low = 0, high = 1)
+        perturbation_factor = rng.uniform(low = 0, high = 1)
         difference_vector = mean_counterfactual_class - perturbed_vector
 
         # Choose random indices to perturb
@@ -195,10 +196,11 @@ class CLEAR1:
                     
                 data_new = np.vstack(components)
                 data = np.vstack((data_new, train_data))
-                #labels = np.hstack((np.array(components_labels),np.array(training_labels).reshape((training_labels.shape[0],))))
-                synthetic_data = np.column_stack((data, labels))
-                rng.shuffle(synthetic_data)
-                generated_data = pd.DataFrame(synthetic_data[:,:synthetic_data.shape[1] - 1], columns= train_data.columns)
+                # labels = np.hstack((np.array(components_labels).reshape((1,len(components_labels))),np.array(training_labels).reshape((1, len(training_labels)))))
+                # synthetic_data = np.column_stack((data, labels.reshape((len(labels),))))
+                # rng.shuffle(synthetic_data)
+                generated_data = pd.DataFrame(data, columns= train_data.columns)
+                print(len(generated_data))
                 #generated_labels =pd.DataFrame(synthetic_data[:,-1], columns= training_labels.columns)
                 for col in self.immutable:
                     generated_data[col] = generated_data[col].apply(lambda x: unit_df[col])
@@ -206,8 +208,8 @@ class CLEAR1:
                     labels = np.array([self.model.predict(np.array(generated_data)[i]) for i in range(len(generated_data))])
                     generated_labels =pd.DataFrame(labels, columns= training_labels.columns)
                 elif  self.backend == 'sklearn':
-                    labels = np.array([self.model.predict(self.model.predict(pd.DataFrame(np.array(generated_data)[i].reshape((1, train_data.shape[1])), columns= train_data.columns))) \
-                                        for i in range(len(generated_data))])
+                    labels = self.model.predict(generated_data)
+                    #labels = 
                     generated_labels =pd.DataFrame(labels, columns= training_labels.columns) 
                 return generated_data, generated_labels
 
@@ -254,8 +256,8 @@ class CLEAR1:
                     labels = np.array([self.model.predict(np.array(generated_data)[i]) for i in range(len(generated_data))])
                     generated_labels =pd.DataFrame(labels, columns= training_labels.columns)
                 elif  self.backend == 'sklearn':
-                    labels = np.array([self.model.predict(self.model.predict(pd.DataFrame(np.array(generated_data)[i].reshape((1, train_data.shape[1])), columns= train_data.columns))) \
-                                        for i in range(len(generated_data))])
+                    labels = self.model.predict(generated_data)
+                    #labels = 
                     generated_labels =pd.DataFrame(labels, columns= training_labels.columns) 
                 return generated_data, generated_labels
 
@@ -285,8 +287,8 @@ class CLEAR1:
                     labels = np.array([self.model.predict(np.array(generated_data)[i]) for i in range(len(generated_data))])
                     generated_labels =pd.DataFrame(labels, columns= training_labels.columns)
                 elif  self.backend == 'sklearn':
-                    labels = np.array([self.model.predict(self.model.predict(pd.DataFrame(np.array(generated_data)[i].reshape((1, train_data.shape[1])), columns= train_data.columns))) \
-                                        for i in range(len(generated_data))])
+                    labels = self.model.predict(generated_data)
+                    #labels = 
                     generated_labels =pd.DataFrame(labels, columns= training_labels.columns) 
                 return generated_data, generated_labels    
             
@@ -404,7 +406,6 @@ class CLEAR1:
             if self.neighbourhood == 'balanced':
                 self.N = np.array([len(first_cut), len(second_cut), len(third_cut)]).min()*3
                 for cut in [first_cut, second_cut, third_cut]:
-                    print(len(cut))
                     
                     distances = []
                     for j in range(len(cut)):
@@ -427,7 +428,7 @@ class CLEAR1:
             else:
                 
                 for cut in [first_cut, second_cut, third_cut]:
-                    print(len(cut))
+
                     
                     distances = []
                     for j in range(len(cut)):
@@ -678,7 +679,8 @@ class CLEAR1:
     
 
     def estimated_b_counterfactual(self, unit, target_class):
-        counterfactual_list = np.array(self.wachter_search(unit,  target_class))
+        cf_list = self.wachter_search(unit,  target_class)
+        counterfactual_list = np.array(cf_list)
         w = self.find_weights(unit, target_class)
         
         estimate = np.zeros((counterfactual_list.shape))
@@ -692,18 +694,27 @@ class CLEAR1:
                 
                 estimate[i][k] = (-1*(np.multiply(w, b_counter)).sum())/(w[k] + 1e-8)
 
-        return estimate
+        return estimate, cf_list
     
 
     def check_counterfactual(self, counterfactual, target):
+        kern = Kernel_obj(np.array(self.train_data.loc[self.training_labels['labels'] == target]))
         if self.backend == 'lvq':
             if self.model.proba_predict(counterfactual)[target] < self.c_t:
-                return True
+                if self.d_t is not None:
+                    if kern.knn_density(np.array(counterfactual)) > self.d_t:
+                        return True
+                else:
+                    return True
             else: 
                 return False 
         elif self.backend == 'sklearn':
             if self.model.predict_proba(counterfactual)[0][target] > self.c_t:
-                return True
+                if self.d_t is not None:
+                    if kern.knn_density(np.array(counterfactual)) > self.d_t:
+                        return True
+                else:
+                    return True
             else: 
                 return False        
 
@@ -744,10 +755,10 @@ class CLEAR1:
             self.target_class = target_class
         
         # unit_class = self.model.predict(unit, self.prototypes, proto_labels)
-        counterfactual_list = self.wachter_search(unit, self.target_class)
-        estimations = self.estimated_b_counterfactual(unit,  self.target_class)
+        #counterfactual_list = self.wachter_search(unit, self.target_class)
+        estimations, counterfactual_list = self.estimated_b_counterfactual(unit,  self.target_class)
         FEs = []
-        for i in range(len(estimations)):
+        for i in range(len(counterfactual_list)):
             fidelity_error = self.fidelity_error(counterfactual_list.iloc[i], estimations[i], unit)
             FEs.append(fidelity_error)
             
@@ -761,7 +772,7 @@ class CLEAR1:
         for i in range(chosen.shape[0]):
             if self.backend =='lvq':
 
-                if self.check_counterfactual(chosen.iloc[i], self.target_class) == True: #and self.check_counterfactual(chosen_estimates[i], self.target_class) == True:
+                if self.check_counterfactual(chosen.iloc[i], self.target_class) == True and self.check_counterfactual(chosen_estimates[i], self.target_class) == True:
                     num_features = 1
                     while num_features <= self.train_data.shape[1] + 1:
                         if check_sparsity(num_features).is_sparse(unit, chosen.iloc[i]):
@@ -777,7 +788,7 @@ class CLEAR1:
                 if self.check_counterfactual(pd.DataFrame(np.array(chosen)[i].reshape((1, self.train_data.shape[1])), columns = self.train_data.columns), self.target_class) == True \
                     and self.check_counterfactual(pd.DataFrame(np.array(chosen_estimates)[i].reshape((1, self.train_data.shape[1])), columns = self.train_data.columns), self.target_class) == True:
                     num_features = 1
-                    while num_features <= self.train_data.shape[1] + 1:
+                    while num_features <= self.train_data.shape[1]+1:
                         if check_sparsity(num_features).is_sparse(unit, chosen.iloc[i]):
                             indices.append(i)
                             
@@ -789,9 +800,7 @@ class CLEAR1:
             norms = np.array([self.MAD(self.train_data[self.training_labels['labels'] == self.target_class], unit, np.array(chosen.iloc[i])) for i in indices])
             min_norm_index = np.argmin(norms)
             cf_index = indices[min_norm_index]
-
-        
-        return chosen.iloc[cf_index], pd.DataFrame(chosen_estimates[cf_index].reshape((1, self.train_data.shape[1])), columns=self.train_data.columns)
+            return chosen.iloc[cf_index:cf_index+1], pd.DataFrame(chosen_estimates[cf_index].reshape((1, self.train_data.shape[1])), columns=self.train_data.columns)
     
         
 
