@@ -203,6 +203,7 @@ class FACE:
                             
                             if self.check_constraints(path[-1], new_others[i]) == True:
                                 Ict += 1
+                                print('+++++')
 
                                 if np.array([np.array_equal(new_others[i], p) for p in path]).sum() == 0:
                                 

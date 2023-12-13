@@ -21,7 +21,8 @@ class Kernel_obj:
 		self.knnK = knnK
 		self.volume = None
 		self.data = data
-
+		self.kde_lst = [self.KDE(np.array(self.data)[i]) for i in range(len(data))]
+		self.knn_lst = [self.kernelKNN(np.array(self.data)[i]) for i in range(len(data))]
 
 
 		
@@ -39,8 +40,13 @@ class Kernel_obj:
 	def KDE(self, xi):
 		norm = distance_obj()
 		inner = np.array([self.K(norm.computeDistance(self.data[i],  xi)/self.b) for i in range(self.data.shape[0])])
-		
 		return inner.sum()/(len(self.data)*self.b)
+	
+	
+	def kde_density(self,xi):
+		x = self.KDE(xi)
+		return self.scale(np.array(self.kde_lst), x)
+
 	
 	def scale(self, data, xi):
 		scaler  = CustomScaler()
@@ -64,11 +70,8 @@ class Kernel_obj:
 	
 
 	def knn_density(self,xi):
-		lst = []
-		for i in range(len(self.data)):
-			lst.append((self.kernelKNN(np.array(self.data)[i])))
 		x = self.kernelKNN(xi)
-		return self.scale(np.array(lst), x)
+		return self.scale(np.array(self.knn_lst), x)
 	
 
 

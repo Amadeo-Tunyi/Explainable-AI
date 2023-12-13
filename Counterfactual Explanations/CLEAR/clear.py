@@ -10,8 +10,8 @@ import random
 from density_check import Kernel_obj
 from helpers import generate_subsets, weighted_l1_norm
 class CLEAR1:
-    def __init__(self,model, num_points_neighbourhood,neighbourhood = 'unbalanced', backend = 'lvq', synthetic_generator_scheme = 'Gaussian', 
-                 classification_threshold = 0.4, density_threshold = None, number_of_CFEs = 1, num_cols = None, cat_cols = None, set_immutable = [],  
+    def __init__(self,model, num_points_neighbourhood,neighbourhood = 'unbalanced', backend = 'lvq', synthetic_generator_scheme = 'Gaussian', density_estimator = 'KNN',
+                 classification_threshold = 0.4, density_threshold = 0.0, number_of_CFEs = 1, num_cols = None, cat_cols = None, set_immutable = [],  
                  regression = None, wachter_search_max = None, learning_rate = None, batch_size = None,
                  number_of_reg_runs = 50):
             
@@ -20,6 +20,7 @@ class CLEAR1:
             self.neighbourhood = neighbourhood
             self.model = model
             self.wachter_search_max = wachter_search_max
+            self.d_e = density_estimator
             #self.prototypes = self.model.fit()
             self.lr = learning_rate
             self.batch_size = batch_size
@@ -200,7 +201,6 @@ class CLEAR1:
                 # synthetic_data = np.column_stack((data, labels.reshape((len(labels),))))
                 # rng.shuffle(synthetic_data)
                 generated_data = pd.DataFrame(data, columns= train_data.columns)
-                print(len(generated_data))
                 #generated_labels =pd.DataFrame(synthetic_data[:,-1], columns= training_labels.columns)
                 for col in self.immutable:
                     generated_data[col] = generated_data[col].apply(lambda x: unit_df[col])
@@ -538,6 +538,7 @@ class CLEAR1:
  
     def wachter_search(self, unit, target_class):
         data, labels = self.synthetic_generator(self.train_data, self.training_labels, unit, target_class)
+        self.kern = Kernel_obj(np.array(self.train_data.loc[self.training_labels['labels'] == target_class]))
         if self.immutable is not None:
             #immutable_features = unit[self.immutable]
             for feature in self.immutable:
@@ -696,27 +697,26 @@ class CLEAR1:
 
         return estimate, cf_list
     
+    def _density(self, counterfactual, target):
+        
+        if self.d_e == 'KDE':
+            return self.kern.kde_density(np.array(counterfactual))
+        elif self.d_e == 'KNN':
+            return self.kern.knn_density(np.array(counterfactual))
+            
+
+    
 
     def check_counterfactual(self, counterfactual, target):
-        kern = Kernel_obj(np.array(self.train_data.loc[self.training_labels['labels'] == target]))
         if self.backend == 'lvq':
             if self.model.proba_predict(counterfactual)[target] < self.c_t:
-                if self.d_t is not None:
-                    if kern.knn_density(np.array(counterfactual)) > self.d_t:
-                        return True
-                else:
+                if self._density(counterfactual, target) > self.d_t:
                     return True
-            else: 
-                return False 
         elif self.backend == 'sklearn':
             if self.model.predict_proba(counterfactual)[0][target] > self.c_t:
-                if self.d_t is not None:
-                    if kern.knn_density(np.array(counterfactual)) > self.d_t:
-                        return True
-                else:
+                if self._density(counterfactual, target) > self.d_t:
                     return True
-            else: 
-                return False        
+                
 
 
 
@@ -772,7 +772,7 @@ class CLEAR1:
         for i in range(chosen.shape[0]):
             if self.backend =='lvq':
 
-                if self.check_counterfactual(chosen.iloc[i], self.target_class) == True and self.check_counterfactual(chosen_estimates[i], self.target_class) == True:
+                if self.check_counterfactual(chosen.iloc[i], self.target_class) == True:# and self.check_counterfactual(chosen_estimates[i], self.target_class) == True:
                     num_features = 1
                     while num_features <= self.train_data.shape[1] + 1:
                         if check_sparsity(num_features).is_sparse(unit, chosen.iloc[i]):
